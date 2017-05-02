@@ -50,7 +50,6 @@ sealed abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: Dat
       .withColumn("metric_name", lit(name))
       .withColumn("metric_type", lit(md.getClass.getSimpleName))
       .coalesce(1)
-      .persist() // persist this one so we can run summary stats
     aggregate.show()
     aggregate
   }
@@ -118,7 +117,7 @@ class StringScalarAnalyzer(name: String, sd: StringScalar, df: DataFrame) extend
       case Some(x: DataFrame) => x.persist()
       case _ => return List()
     }
-    val aggregates = aggregate(explodeMetric(filtered))
+    val aggregates = aggregate(explodeMetric(filtered)).persist()
     val withSummaries = runSummaryStatistics(aggregates)
     val rows = runTestStatistics(filtered, withSummaries).collect().toList
     keyMapping(aggregates)
@@ -266,9 +265,10 @@ with LongitudinalHistogramAnalyzer {
       .coalesce(1)
       .persist() // persist this one so we can run summary stats
     aggregate.show()
-    exploded.unpersist()
     val rows = aggregate.rdd.map(histogramToMap).map(createStatistics).collect.toList
     rows.foreach(println)
+    filtered.unpersist()
+    aggregate.unpersist()
     rows
   }
 }
