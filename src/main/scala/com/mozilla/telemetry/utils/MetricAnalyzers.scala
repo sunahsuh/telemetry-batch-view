@@ -66,7 +66,7 @@ sealed abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: Dat
 }
 
 sealed abstract class ScalarAnalyzer(name: String, sd: ScalarDefinition, df: DataFrame) extends MetricAnalyzer(name, sd, df) {
-  def handleKeys: Column = if (sd.keyed) keyedUDF(col("metric")) else col(s"$name.value")
+  def handleKeys: Column = if (sd.keyed) keyedUDF(col("metric")) else col(s"metric.value")
 }
 
 object ScalarAnalyzer {
@@ -158,7 +158,7 @@ class StringScalarAnalyzer(name: String, sd: StringScalar, df: DataFrame) extend
 }
 
 trait LongitudinalHistogramAnalyzer {
-  // fix inheritence to make this unnecessary
+  // fix inheritance to make this unnecessary
   val isKeyed: Boolean
   val reducer: AggregateHistograms
   val keys: List[Int]
