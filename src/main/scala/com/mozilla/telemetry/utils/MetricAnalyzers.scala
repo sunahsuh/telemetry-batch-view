@@ -17,22 +17,24 @@ sealed abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: Dat
 
   def analyze: List[Row]
 
+  // We want to keep this output since we'll need this to do the experimental distance metrics
+  // Question: for permutation tests, are the null values significant? e.g. should we be doing the tests on the DF before
+  // filtering out nulls?
   def formatAndFilter: Option[DataFrame] = {
-    val filtered: DataFrame =
-      Try(df.select(
-        col("experiment").as("experiment_name"),
-        col("branch").as("experiment_branch"),
-        lit(null).as("subgroup"),
-        col(name).as("metric"))
-        .filter(col("metric").isNotNull)
-      ) match {
-        case Success(x) => Some(x)
-        // expected failure, if the dataset doesn't include this metric (e.g. it's newly added)
-        case Failure(_: org.apache.spark.sql.AnalysisException) => None
-        // Let other exceptions bubble up
-      }
+    Try(df.select(
+      col("experiment").as("experiment_name"),
+      col("branch").as("experiment_branch"),
+      lit(null).as("subgroup"),
+      col(name).as("metric"))
+      .filter(col("metric").isNotNull)
+    ) match {
+      case Success(x) => Some(x)
+      // expected failure, if the dataset doesn't include this metric (e.g. it's newly added)
+      case Failure(_: org.apache.spark.sql.AnalysisException) => None
+      // Let other exceptions bubble up
+    }
   }
-  def explode(filtered: DataFrame): DataFrame = {
+  def explodeMetric(filtered: DataFrame): DataFrame = {
       filtered.select(
         col("experiment_name"),
         col("experiment_branch"),
@@ -53,23 +55,20 @@ sealed abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: Dat
     aggregate
   }
 
-  def cleanup() = {
-    aggregate.unpersist()
-    filtered.unpersist()
-  }
-
   def runSummaryStatistics(aggregates: DataFrame): DataFrame = {
     // TODO: fill me in!
     aggregates
   }
 
-  def runTestStatistics(aggregates: DataFrame): DataFrame = {
+  def runTestStatistics(filtered: DataFrame, aggregates: DataFrame): DataFrame = {
     // TODO: fill me in!
     aggregates
   }
 }
 
-sealed abstract class ScalarAnalyzer(name: String, sd: ScalarDefinition, df: DataFrame) extends MetricAnalyzer
+sealed abstract class ScalarAnalyzer(name: String, sd: ScalarDefinition, df: DataFrame) extends MetricAnalyzer(name, sd, df) {
+  def handleKeys: Column = if (sd.keyed) keyedUDF(col("metric")) else col(s"$name.value")
+}
 
 object ScalarAnalyzer {
   def getAnalyzer(name: String, sd: ScalarDefinition, df: DataFrame): ScalarAnalyzer = {
@@ -88,13 +87,17 @@ class UintScalarAnalyzer(name: String, sd: UintScalar, df: DataFrame) extends Sc
 
   def analyze: List[Row] = {
     println(name)
-    val filtered = formatAndFilter() match {
+    val filtered = formatAndFilter match {
       case Some(x: DataFrame) => x.persist()
       case _ => return List()
     }
-    val aggregates = aggregate(explode(filtered)).persist()
+    val aggregates = aggregate(explodeMetric(filtered)).persist()
     val withSummaries = runSummaryStatistics(aggregates)
-    runTestStatistics(filtered, withSummaries).toRDD
+    val rows = runTestStatistics(filtered, withSummaries).collect().toList
+    // TODO: test if unpersist is lazy -- if not, this is meaningless
+    filtered.unpersist()
+    aggregates.unpersist()
+    rows
   }
 
   def collapseKeys(m: Map[String, Seq[Row]]): Seq[Long] = {
@@ -111,15 +114,17 @@ class UintScalarAnalyzer(name: String, sd: UintScalar, df: DataFrame) extends Sc
 class StringScalarAnalyzer(name: String, sd: StringScalar, df: DataFrame) extends ScalarAnalyzer(name, sd, df) {
   def analyze: List[Row] = {
     println(name)
-    val filtered = formatAndFilter() match {
+    val filtered = formatAndFilter match {
       case Some(x: DataFrame) => x.persist()
       case _ => return List()
     }
-    val aggregates = aggregate(explode(filtered))
+    val aggregates = aggregate(explodeMetric(filtered))
     val withSummaries = runSummaryStatistics(aggregates)
-    val testStatistics = runTestStatistics(withSummaries)
+    val rows = runTestStatistics(filtered, withSummaries).collect().toList
     keyMapping(aggregates)
-    testStatistics
+    filtered.unpersist()
+    aggregates.unpersist()
+    rows
   }
 
   val reducer = new AggregateScalars[String](StringType)
@@ -154,6 +159,8 @@ class StringScalarAnalyzer(name: String, sd: StringScalar, df: DataFrame) extend
 }
 
 trait LongitudinalHistogramAnalyzer {
+  // fix inheritence to make this unnecessary
+  val isKeyed: Boolean
   val reducer: AggregateHistograms
   val keys: List[Int]
 
@@ -162,8 +169,9 @@ trait LongitudinalHistogramAnalyzer {
   def prepColumn: Column
 }
 
-sealed abstract class HistogramAnalyzer(name: String, hd: HistogramDefinition, df: DataFrame)
-  extends MetricAnalyzer with LongitudinalHistogramAnalyzer {
+sealed abstract class HistogramAnalyzer(name: String, hd: HistogramDefinition, df: DataFrame) extends MetricAnalyzer(name, hd, df)
+with LongitudinalHistogramAnalyzer {
+  val isKeyed = hd.keyed
 
   def histogramToMap(r: Row): Row = {
     // if I weren't lazy a case class might look better here
@@ -223,9 +231,9 @@ sealed abstract class HistogramAnalyzer(name: String, hd: HistogramDefinition, d
     Row.fromSeq(r.toSeq :+ stats)
   }
 
-  def handleKeys: Column = if (keyed) keyedUDF(col("metric")) else col(name)
+  def handleKeys: Column = if (hd.keyed) keyedUDF(col("metric")) else col("metric")
 
-  def aggregate(): List[Row] = {
+  def analyze(): List[Row] = {
     println(name)
 
     val filtered: DataFrame =
@@ -249,10 +257,10 @@ sealed abstract class HistogramAnalyzer(name: String, hd: HistogramDefinition, d
         col("subgroup"),
         explode(handleKeys).as("metric"))
         .filter(col("metric").isNotNull) // Second null filter to find individual nulls
-    val subset = filterExp(exploded.withColumn("histogram", prepColumn))
+    val subset = filterExp(exploded.withColumn("metric", prepColumn))
     val aggregate = subset
       .groupBy(col("experiment_name"), col("experiment_branch"), col("subgroup"))
-      .agg(count("histogram").as("n"), reducer(col("histogram")).as("histogram_agg"))
+      .agg(count("metric").as("n"), reducer(col("metric")).as("histogram_agg"))
       .withColumn("metric_name", lit(name))
       .withColumn("metric_type", lit(hd.getClass.getSimpleName))
       .coalesce(1)
@@ -287,7 +295,7 @@ trait HasSumFilter extends LongitudinalHistogramAnalyzer {
   override def filterExp(df: DataFrame): DataFrame = {
     val sumArray: Seq[Int] => Int = _.sum
     val sumArrayUDF = udf(sumArray)
-    df.filter(sumArrayUDF(col("histogram")) > 0)
+    df.filter(sumArrayUDF(col("metric")) > 0)
   }
 }
 
@@ -305,7 +313,7 @@ trait EnumHistograms extends LongitudinalHistogramAnalyzer with HasSumFilter {
 
   lazy val keyedUDF = udf(collapseKeys _)
 
-  override def prepColumn: Column = col("histogram") // no-op -- these are already in the correct format
+  override def prepColumn: Column = col("metric") // no-op -- these are already in the correct format
 }
 
 trait RealHistograms extends LongitudinalHistogramAnalyzer with HasSumFilter {
@@ -321,9 +329,9 @@ trait RealHistograms extends LongitudinalHistogramAnalyzer with HasSumFilter {
   lazy val keyedUDF = udf(collapseKeys _)
 
   override def prepColumn: Column = {
-    keyed match {
-      case false => col("histogram").getField("values")
-      case _ => col("histogram")
+    isKeyed match {
+      case false => col("metric").getField("values")
+      case _ => col("metric")
     }
   }
 }
@@ -346,9 +354,9 @@ class FlagHistogramAnalyzer(name: String, hd: FlagHistogram, df: DataFrame)
 
   lazy val keyedUDF = udf(collapseKeys _)
 
-  override def prepColumn: Column = keyed match {
-    case false => expr("if(histogram == true, Array(0, 1), Array(1, 0))")
-    case true => col("histogram")
+  override def prepColumn: Column = hd.keyed match {
+    case false => expr("if(metric == true, Array(0, 1), Array(1, 0))")
+    case true => col("metric")
   }
 }
 
@@ -374,7 +382,7 @@ class CountHistogramAnalyzer(name: String, hd: CountHistogram, df: DataFrame)
   }
   lazy val keyedUDF = udf(collapseKeys _)
 
-  override def prepColumn: Column = array("histogram")
+  override def prepColumn: Column = array("metric")
 }
 
 class EnumeratedHistogramAnalyzer(name: String, hd: EnumeratedHistogram, df: DataFrame)

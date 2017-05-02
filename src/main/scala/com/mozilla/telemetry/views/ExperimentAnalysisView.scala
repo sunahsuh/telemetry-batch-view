@@ -59,14 +59,14 @@ object ExperimentAnalysisView {
     val output = histogramList.flatMap {
       case(name: String, hd: HistogramDefinition) =>
         HistogramAnalyzer.getAnalyzer(
-          name.toLowerCase, hd, pings
+          name.toLowerCase, hd, rows
         ).analyze
       case _ => List()
     } ++
     Scalars.definitions.flatMap {
       case(name: String, sd: ScalarDefinition) =>
         ScalarAnalyzer.getAnalyzer(
-          LongitudinalView.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, pings
+          LongitudinalView.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, rows
         ).analyze
     }
     output.foreach(println)
@@ -78,7 +78,7 @@ object ExperimentAnalysisView {
     spark.stop()
   }
 
-  def getPings(spark: SparkSession): DataFrame = {
+  def getRows(spark: SparkSession): DataFrame = {
     // spark.read.parquet(s"s3://telemetry-test-bucket/ssuh/fake_button_change_experiment/")
     spark.read.parquet("/Users/ssuh/dev/mozilla/scratch/longitudinal_shard_fake_branches")
   }
