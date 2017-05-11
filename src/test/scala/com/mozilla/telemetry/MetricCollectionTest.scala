@@ -2,7 +2,7 @@ package com.mozilla.telemetry
 
 import com.mozilla.telemetry.histograms._
 import com.mozilla.telemetry.views.ExperimentAnalysisView
-import com.mozilla.telemetry.utils.HistogramAnalyzer
+import com.mozilla.telemetry.experiments.analyzers.MetricAnalyzer
 import org.apache.spark.sql.{Row, SparkSession}
 import org.scalatest.{FlatSpec, Matchers}
 
@@ -25,7 +25,7 @@ case class TestLongitudinal(experiment: String,
                            )
 
 
-class MetricCollectionTest extends FlatSpec with Matchers{
+class ExperimentAnalysisViewTest extends FlatSpec with Matchers{
   "Histograms" can "be aggregated" in {
     val spark = SparkSession
       .builder()
@@ -115,12 +115,13 @@ class MetricCollectionTest extends FlatSpec with Matchers{
       df.count should be(4)
       val results = histogramList.flatMap {
         case(name: String, hd: HistogramDefinition) =>
-          HistogramAnalyzer.getAnalyzer(
+          MetricAnalyzer.getAnalyzer(
             name.toLowerCase, hd, df
           ).analyze
       }.toList
 
       results.length should be(24)
+      results.foreach(println)
       noException should be thrownBy spark.sqlContext.createDataFrame(
         spark.sparkContext.parallelize(results), ExperimentAnalysisView.buildOutputSchema
       ).count()

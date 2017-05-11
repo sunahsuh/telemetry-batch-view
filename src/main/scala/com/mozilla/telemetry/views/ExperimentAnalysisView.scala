@@ -1,8 +1,8 @@
 package com.mozilla.telemetry.views
 
+import com.mozilla.telemetry.experiments.analyzers.MetricAnalyzer
 import com.mozilla.telemetry.histograms.{HistogramDefinition, Histograms}
 import com.mozilla.telemetry.scalars.{ScalarDefinition, Scalars}
-import com.mozilla.telemetry.utils.{ScalarAnalyzer, HistogramAnalyzer}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.rogach.scallop.ScallopConf
 import org.apache.spark.sql.types._
@@ -53,20 +53,20 @@ object ExperimentAnalysisView {
     val rows = getRows(spark)
 
     val histogramList = conf.hist.get match {
-      case Some(h) => Map(h -> Histograms.definitions(h.toUpperCase))
-      case _ => Histograms.definitions
+      case Some(h) => Map(h -> Histograms.definitions()(h.toUpperCase))
+      case _ => Histograms.definitions()
     }
     val output = histogramList.flatMap {
       case(name: String, hd: HistogramDefinition) =>
-        HistogramAnalyzer.getAnalyzer(
+        MetricAnalyzer.getAnalyzer(
           name.toLowerCase, hd, rows
         ).analyze
       case _ => List()
     } ++
-    Scalars.definitions.flatMap {
+    Scalars.definitions().flatMap {
       case(name: String, sd: ScalarDefinition) =>
-        ScalarAnalyzer.getAnalyzer(
-          LongitudinalView.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, rows
+        MetricAnalyzer.getAnalyzer(
+          Scalars.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, rows
         ).analyze
     }
     output.foreach(println)
