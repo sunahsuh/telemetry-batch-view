@@ -9,15 +9,24 @@ import com.mozilla.telemetry.histograms._
 
 import scala.util.{Failure, Success, Try}
 
-/**
-  * Created by ssuh on 5/9/17.
-  */
+
 abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: DataFrame) extends java.io.Serializable {
   val reducer: UserDefinedAggregateFunction
   def handleKeys: Column
   val keyedUDF: UserDefinedFunction
 
-  def analyze: List[Row]
+  def analyze(): List[Row] = {
+    println(name)
+    val filtered = formatAndFilter match {
+      case Some(x: DataFrame) => x.persist()
+      case _ => return List()
+    }
+    val rows = aggregate(explodeMetric(filtered)).rdd.collect.toList
+    val summary_stats = runSummaryStatistics(rows)
+    val test_stats = runTestStatistics(filtered, rows)
+    filtered.unpersist()
+    toFinalSchema(rows, summary_stats, test_stats)
+  }
 
   // We want to keep this output since we'll need this to do the experimental distance metrics
   // Question: for permutation tests, are the null values significant? e.g. should we be doing the tests on the DF before
@@ -26,7 +35,7 @@ abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: DataFrame)
     Try(df.select(
       col("experiment").as("experiment_name"),
       col("branch").as("experiment_branch"),
-      lit(null).as("subgroup"),
+      lit("All").as("subgroup"),
       col(name).as("metric"))
       .filter(col("metric").isNotNull)
     ) match {
@@ -56,15 +65,17 @@ abstract class MetricAnalyzer(name: String, md: MetricDefinition, df: DataFrame)
     aggregate
   }
 
-  def runSummaryStatistics(aggregates: DataFrame): DataFrame = {
+  def runSummaryStatistics(rows: List[Row]): List[List[Row]] = {
     // TODO: fill me in!
-    aggregates
+    List()
   }
 
-  def runTestStatistics(filtered: DataFrame, aggregates: DataFrame): DataFrame = {
+  def runTestStatistics(filtered: DataFrame, rows: List[Row]): List[List[Row]] = {
     // TODO: fill me in!
-    aggregates
+    List()
   }
+
+  def toFinalSchema(rows: List[Row], summary_stats: List[List[Row]], test_stats: List[List[Row]]): List[Row]
 }
 
 object MetricAnalyzer {

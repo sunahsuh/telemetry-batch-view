@@ -3,7 +3,7 @@ package com.mozilla.telemetry.views
 import com.mozilla.telemetry.experiments.analyzers.MetricAnalyzer
 import com.mozilla.telemetry.histograms.{HistogramDefinition, Histograms}
 import com.mozilla.telemetry.scalars.{ScalarDefinition, Scalars}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.rogach.scallop.ScallopConf
 import org.apache.spark.sql.types._
 
@@ -60,21 +60,21 @@ object ExperimentAnalysisView {
       case(name: String, hd: HistogramDefinition) =>
         MetricAnalyzer.getAnalyzer(
           name.toLowerCase, hd, rows
-        ).analyze
+        ).analyze()
       case _ => List()
     } ++
     Scalars.definitions().flatMap {
       case(name: String, sd: ScalarDefinition) =>
         MetricAnalyzer.getAnalyzer(
           Scalars.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, rows
-        ).analyze
+        ).analyze()
     }
     output.foreach(println)
 
-    //val o = spark.sparkContext.parallelize(output.toList)
-    //val df = spark.sqlContext.createDataFrame(o, buildOutputSchema)
+    val o = spark.sparkContext.parallelize(output.toList)
+    val df = spark.sqlContext.createDataFrame(o, buildOutputSchema)
     // df.repartition(1).write.parquet(s"s3://telemetry-test-bucket/ssuh/fake_experiment_analysis2")
-    // df.repartition(1).write.parquet("/Users/ssuh/dev/mozilla/scratchnalysis_output")
+    df.repartition(1).write.parquet("/Users/ssuh/dev/mozilla/scratchnalysis_output")
     spark.stop()
   }
 
