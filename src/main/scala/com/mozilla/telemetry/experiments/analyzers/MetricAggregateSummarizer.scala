@@ -1,7 +1,6 @@
 package com.mozilla.telemetry.experiments.analyzers
 
 import org.apache.spark.sql.Row
-
 import scala.annotation.tailrec
 
 

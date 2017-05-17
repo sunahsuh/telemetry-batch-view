@@ -3,7 +3,7 @@ package com.mozilla.telemetry.views
 import com.mozilla.telemetry.experiments.analyzers.MetricAnalyzer
 import com.mozilla.telemetry.histograms.{HistogramDefinition, Histograms}
 import com.mozilla.telemetry.scalars.{ScalarDefinition, Scalars}
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.SparkSession
 import org.rogach.scallop.ScallopConf
 import org.apache.spark.sql.types._
 
@@ -13,19 +13,11 @@ object ExperimentAnalysisView {
 
   // Configuration for command line arguments
   private class Conf(args: Array[String]) extends ScallopConf(args) {
-    /*
-    val from = opt[String]("from", descr = "From submission date", required = false)
-    val to = opt[String]("to", descr = "To submission date", required = false)
-    */
-    // val outputBucket = opt[String]("bucket", descr = "Destination bucket for parquet data", required = true)
-    /*
-    val limit = opt[Int]("limit", descr = "Maximum number of files to read from S3", required = false)
-    val channel = opt[String]("channel", descr = "Only process data from the given channel", required = false)
-    val appVersion = opt[String]("version", descr = "Only process data from the given app version", required = false)
-    val experiment = opt[String]("experiment", descr = "Only process data from the given experiment", required = false)
-    verify()
-    */
-    val hist = opt[String]("histogram", descr = "Run job on just this histogram", required = false)
+    // TODO: change to s3 bucket/keys
+    val inputLocation = opt[String]("input", descr = "Source for parquet data", required = true)
+    val outputLocation = opt[String]("output", descr = "Destination for parquet data", required = true)
+    val histo = opt[String]("histogram", descr = "Run job on just this histogram", required = false)
+    val scalar = opt[String]("scalar", descr = "Run job on just this scalar", required = false)
     verify()
   }
 
@@ -50,12 +42,18 @@ object ExperimentAnalysisView {
     hadoopConf.set("parquet.enable.summary-metadata", "false")
 
     // Grab messages
-    val rows = getRows(spark)
+    val rows = spark.read.parquet(conf.inputLocation())
 
-    val histogramList = conf.hist.get match {
+    val histogramList = conf.histo.get match {
       case Some(h) => Map(h -> Histograms.definitions()(h.toUpperCase))
       case _ => Histograms.definitions()
     }
+    val scalarList = conf.scalar.get match {
+      case Some(s) => Map(s -> Histograms.definitions()(s.toUpperCase))
+      case _ => Scalars.definitions()
+    }
+
+    /*
     val output = histogramList.flatMap {
       case(name: String, hd: HistogramDefinition) =>
         MetricAnalyzer.getAnalyzer(
@@ -63,7 +61,8 @@ object ExperimentAnalysisView {
         ).analyze()
       case _ => List()
     } ++
-    Scalars.definitions().flatMap {
+    */
+    val output = scalarList.flatMap {
       case(name: String, sd: ScalarDefinition) =>
         MetricAnalyzer.getAnalyzer(
           Scalars.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, rows
@@ -73,14 +72,8 @@ object ExperimentAnalysisView {
 
     val o = spark.sparkContext.parallelize(output.toList)
     val df = spark.sqlContext.createDataFrame(o, buildOutputSchema)
-    // df.repartition(1).write.parquet(s"s3://telemetry-test-bucket/ssuh/fake_experiment_analysis2")
-    df.repartition(1).write.parquet("/Users/ssuh/dev/mozilla/scratchnalysis_output")
+    df.repartition(1).write.parquet(conf.outputLocation())
     spark.stop()
-  }
-
-  def getRows(spark: SparkSession): DataFrame = {
-    // spark.read.parquet(s"s3://telemetry-test-bucket/ssuh/fake_button_change_experiment/")
-    spark.read.parquet("/Users/ssuh/dev/mozilla/scratch/longitudinal_shard_fake_branches")
   }
 
   def buildStatisticSchema = StructType(List(
