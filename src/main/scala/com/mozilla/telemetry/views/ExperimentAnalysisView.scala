@@ -53,21 +53,20 @@ object ExperimentAnalysisView {
       case _ => Scalars.definitions()
     }
 
-    /*
-    val output = histogramList.flatMap {
-      case(name: String, hd: HistogramDefinition) =>
-        MetricAnalyzer.getAnalyzer(
-          name.toLowerCase, hd, rows
-        ).analyze()
-      case _ => List()
-    } ++
-    */
     val output = scalarList.flatMap {
       case(name: String, sd: ScalarDefinition) =>
         MetricAnalyzer.getAnalyzer(
           Scalars.getParquetFriendlyScalarName(name.toLowerCase, "parent"), sd, rows
         ).analyze()
+    } ++
+    histogramList.flatMap {
+      case(name: String, hd: HistogramDefinition) =>
+        MetricAnalyzer.getAnalyzer(
+          name.toLowerCase, hd, rows
+        ).analyze()
+      case _ => List()
     }
+
     output.foreach(println)
 
     val o = spark.sparkContext.parallelize(output.toList)
