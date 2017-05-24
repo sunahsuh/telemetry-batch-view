@@ -177,70 +177,9 @@ object LongitudinalView {
     lockfile.createNewFile()
     S3Store.uploadFile(lockfile, outputBucket, prefix, lockfileName)
 
-    // Sort submissions in descending order
-    implicit val ordering = Ordering[(String, String, Int)].reverse
-    val clientMessages = messages
-      .flatMap {
-        (message) =>
-          val fields = message.fieldsAsMap
-          val payload = message.payload.getOrElse(fields.getOrElse("submission", "{}")) match {
-            case p: String => parse(p) \ "payload"
-            case _ => JObject()
-          }
-          for {
-            clientId <- fields.get("clientId").asInstanceOf[Option[String]]
-            json <- fields.get("payload.info").asInstanceOf[Option[String]]
+    val clientMessages = sortMessages(messages)
+    val counts = processAndSave(clientMessages, includeOptin, outputBucket, prefix)
 
-            info = parse(json)
-            JString(startDate) <- (info \ "subsessionStartDate").toOption
-            JInt(counter) <- (info \ "profileSubsessionCounter").toOption
-          } yield ((clientId, startDate, counter.toInt),
-                   fields + ("payload" -> compact(render(payload))) - "submission")
-      }
-      .repartitionAndSortWithinPartitions(new ClientIdPartitioner(480))
-      .map { case (key, value) => (key._1, value) }
-
-    /* One file per partition is generated at the end of the job. We want to have
-       few big files but at the same time we need a high enough degree of parallelism
-       to keep all workers busy. Since the cluster typically used for this job has
-       8 workers and 20 executors, 320 partitions provide a good compromise. */
-
-    val histogramDefinitions = Histograms.definitions(includeOptin)
-    val scalarDefinitions = Scalars.definitions(includeOptin)
-
-    val partitionCounts = clientMessages
-      .mapPartitions{ case it =>
-        val clientIterator = new ClientIterator(it)
-        val schema = buildSchema(histogramDefinitions, scalarDefinitions)
-
-        val allRecords = for {
-          client <- clientIterator
-          record = buildRecord(client, schema, histogramDefinitions, scalarDefinitions)
-        } yield record
-
-        var ignoredCount = 0
-        var processedCount = 0
-        val records = allRecords.map(r => r match {
-          case Some(record) =>
-            processedCount += 1
-            r
-          case None =>
-            ignoredCount += 1
-            r
-        }).flatten
-
-        while(records.nonEmpty) {
-          // Block size has to be increased to pack more than a couple hundred profiles
-          // within the same row group.
-          val localFile = new java.io.File(ParquetFile.serialize(records, schema, 8).toUri())
-          S3Store.uploadFile(localFile, outputBucket, prefix)
-          localFile.delete()
-        }
-
-        List((processedCount + ignoredCount, ignoredCount)).toIterator
-      }
-
-    val counts = partitionCounts.reduce( (x, y) => (x._1 + y._1, x._2 + y._2))
     println("Clients seen: %d".format(counts._1))
     println("Clients ignored: %d".format(counts._2))
 
@@ -248,7 +187,79 @@ object LongitudinalView {
     S3Store.deleteKey(outputBucket,  s"${prefix}/${lockfileName}")
   }
 
-  private def buildSchema(histogramDefinitions: Map[String, HistogramDefinition], scalarDefinitions: Map[String, ScalarDefinition]): Schema = {
+  def sortMessages(messages: RDD[Message]): RDD[(String, Map[String, Any])] = {
+    // Sort submissions in descending order
+    implicit val ordering = Ordering[(String, String, Int)].reverse
+    messages.flatMap {
+      (message) =>
+        val fields = message.fieldsAsMap
+        val payload = message.payload.getOrElse(fields.getOrElse("submission", "{}")) match {
+          case p: String => parse(p) \ "payload"
+          case _ => JObject()
+        }
+        for {
+          clientId <- fields.get("clientId").asInstanceOf[Option[String]]
+          json <- fields.get("payload.info").asInstanceOf[Option[String]]
+
+          info = parse(json)
+          JString(startDate) <- (info \ "subsessionStartDate").toOption
+          JInt(counter) <- (info \ "profileSubsessionCounter").toOption
+        } yield ((clientId, startDate, counter.toInt),
+          fields + ("payload" -> compact(render(payload))) - "submission")
+    }
+    .repartitionAndSortWithinPartitions(new ClientIdPartitioner(480))
+    .map { case (key, value) => (key._1, value) }
+  }
+
+  def processAndSave(messages: RDD[(String, Map[String, Any])],
+                     includeOptin: Boolean,
+                     outputBucket: String,
+                     prefix: String,
+                     experimentId: Option[String] = None): (Int, Int) = {
+    val histogramDefinitions = Histograms.definitions(includeOptin)
+    val scalarDefinitions = Scalars.definitions(includeOptin)
+
+    /* One file per partition is generated at the end of the job. We want to have
+       few big files but at the same time we need a high enough degree of parallelism
+       to keep all workers busy. Since the cluster typically used for this job has
+       8 workers and 20 executors, 320 partitions provide a good compromise. */
+    val counts = messages.mapPartitions{ case it =>
+      val clientIterator = new ClientIterator(it)
+      val schema = buildSchema(histogramDefinitions, scalarDefinitions, experimentId)
+
+      val allRecords = for {
+        client <- clientIterator
+        record = buildRecord(client, schema, histogramDefinitions, scalarDefinitions, experimentId)
+      } yield record
+
+      var ignoredCount = 0
+      var processedCount = 0
+      val records = allRecords.map(r => r match {
+        case Some(record) =>
+          processedCount += 1
+          r
+        case None =>
+          ignoredCount += 1
+          r
+      }).flatten
+
+      while(records.nonEmpty) {
+        // Block size has to be increased to pack more than a couple hundred profiles
+        // within the same row group.
+        val localFile = new java.io.File(ParquetFile.serialize(records, schema, 8).toUri())
+        S3Store.uploadFile(localFile, outputBucket, prefix)
+        localFile.delete()
+      }
+
+      List((processedCount + ignoredCount, ignoredCount)).toIterator
+    }
+
+    counts.reduce( (x, y) => (x._1 + y._1, x._2 + y._2))
+  }
+
+  private def buildSchema(histogramDefinitions: Map[String, HistogramDefinition],
+                          scalarDefinitions: Map[String, ScalarDefinition],
+                          experimentId: Option[String] = None): Schema = {
     // The $PROJECT_ROOT/scripts/generate-ping-schema.py script can be used to
     // generate these SchemaBuilder definitions, and the output of that script is
     // combined with data from http://gecko.readthedocs.org/en/latest/toolkit/components/telemetry/telemetry
@@ -580,6 +591,12 @@ object LongitudinalView {
         case _ =>
           throw new Exception("Unrecognized scalar type")
       }
+    }
+
+    experimentId match {
+      case Some(e) => builder.name("experiment_id").`type`().optional().stringType()
+                             .name("experiment_branch").`type`().optional().stringType()
+      case _ => Unit
     }
 
     builder.endRecord()
@@ -951,7 +968,25 @@ object LongitudinalView {
     }
   }
 
-  private def buildRecord(history: Iterable[Map[String, Any]], schema: Schema, histogramDefinitions: Map[String, HistogramDefinition], scalarDefinitions: Map[String, ScalarDefinition]): Option[GenericRecord] = {
+  private def experiment2Avro(payload: Map[String, Any], root: GenericRecordBuilder, experimentId: Option[String]): Unit = {
+    experimentId match {
+      case Some(e) => {
+        val branch = parse(payload.getOrElse(s"environment.experiments", return).asInstanceOf[String]) \ e \ "branch" match {
+          case JString(value) => value
+          case _ => return
+        }
+        root.set("experiment_id", e)
+            .set("experiment_branch", branch)
+      }
+      case _ => Unit
+    }
+  }
+
+  private def buildRecord(history: Iterable[Map[String, Any]],
+                          schema: Schema,
+                          histogramDefinitions: Map[String, HistogramDefinition],
+                          scalarDefinitions: Map[String, ScalarDefinition],
+                          experimentId: Option[String] = None): Option[GenericRecord] = {
     // De-dupe records
     val sorted = history.foldLeft((List[Map[String, Any]](), Set[String]()))(
       { case ((submissions, seen), current) =>
@@ -1013,6 +1048,7 @@ object LongitudinalView {
       keyedScalars2Avro(sorted, root, scalarDefinitions)
       sessionStartDates2Avro(sorted, root, schema)
       profileDates2Avro(sorted, root, schema)
+      experiment2Avro(sorted.head, root, experimentId)
     } catch {
       case e : Throwable =>
         // Ignore buggy clients
