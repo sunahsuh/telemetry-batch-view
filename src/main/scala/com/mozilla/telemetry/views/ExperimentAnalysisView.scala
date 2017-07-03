@@ -35,8 +35,6 @@ object ExperimentAnalysisView {
       .appName(jobName)
       .getOrCreate()
 
-    spark.sparkContext.setLogLevel("ERROR")
-
     val hadoopConf = spark.sparkContext.hadoopConfiguration
     hadoopConf.set("parquet.enable.summary-metadata", "false")
 
