@@ -141,5 +141,8 @@ object ExperimentSummaryView {
         None
     }
   }
-}
 
+  def datasetPath: String = {
+    s"experiments/$schemaVersion/"
+  }
+}
