@@ -1,6 +1,6 @@
 package com.mozilla.telemetry.experiments.intermediates
 
-import com.mozilla.telemetry.experiments.analyzers.{PreAggregateRow, UintAggregator}
+import com.mozilla.telemetry.experiments.analyzers.UintAggregator
 import com.mozilla.telemetry.metrics.HistogramDefinition
 import org.apache.spark.sql._
 

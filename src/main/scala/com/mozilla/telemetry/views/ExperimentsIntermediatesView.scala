@@ -29,14 +29,13 @@ object ExperimentsIntermediatesView {
   implicit class ExperimentDataFrame(df: DataFrame) {
     def selectUsedColumns: DataFrame = {
       val columns = (usedColumns
-        ++ (df.schema.map(_.name).filter { s: String => s.startsWith("histogram_") || s.startsWith("scalar_") }))
+        ++ df.schema.map(_.name).filter { s: String => s.startsWith("histogram_") || s.startsWith("scalar_") })
       df.select(columns.head, columns.tail: _*)
     }
   }
 
   // Configuration for command line arguments
   class Conf(args: Array[String]) extends ScallopConf(args) {
-    // TODO: change to s3 bucket/keys
     val inputBucket = opt[String]("inbucket", descr = "Source bucket for parquet data", required = true)
     val bucket = opt[String]("bucket", descr = "Destination bucket for parquet data", required = true)
     val metric = opt[String]("metric", descr = "Run job on just this metric", required = false)
@@ -80,7 +79,7 @@ object ExperimentsIntermediatesView {
         .where(col("experiment_id") === e)
         .where(col("submission_date_s3") === date)
 
-      val outputLocation = s"${conf.bucket}/$datasetPath/experiment_id=$e/submission_date_s3=$date"
+      val outputLocation = s"s3://${conf.bucket()}/$datasetPath/experiment_id=$e/submission_date_s3=$date"
 
       import spark.implicits._
       getAggregates(e, experimentsSummary, conf)
@@ -116,9 +115,8 @@ object ExperimentsIntermediatesView {
 
   def getMetrics(conf: Conf, data: DataFrame) = {
     conf.metric.get match {
-      case Some(m) => {
+      case Some(m) =>
         List((m, (Histograms.definitions(includeOptin = true, nameJoiner = Histograms.prefixProcessJoiner _) ++ Scalars.definitions())(m.toUpperCase)))
-      }
       case _ => {
         val histogramDefs = MainSummaryView.filterHistogramDefinitions(
           Histograms.definitions(includeOptin = true, nameJoiner = Histograms.prefixProcessJoiner _),

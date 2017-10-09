@@ -1,6 +1,6 @@
 package com.mozilla.telemetry.experiments.intermediates
 
-import com.mozilla.telemetry.experiments.analyzers.{PreAggregateRow, MetricAggregator, MetricKey, HistogramPoint, MetricAnalysis}
+import com.mozilla.telemetry.experiments.analyzers.{MetricAggregator, HistogramPoint, MetricAnalysis}
 import com.mozilla.telemetry.metrics.MetricDefinition
 import org.apache.spark.sql.{DataFrame, Dataset}
 import org.apache.spark.sql.functions.{col, count, lit}
@@ -8,6 +8,14 @@ import org.apache.spark.sql.functions.{col, count, lit}
 import scala.collection.Map
 import scala.util.{Failure, Success, Try}
 
+trait PreAggregateRow[T] {
+  val experiment_id: String
+  val branch: String
+  val subgroup: String
+  val metric: Option[Map[T, Long]]
+}
+
+case class MetricKey(experiment_id: String, branch: String, subgroup: String)
 
 abstract class MetricIntermediate[T](name: String, md: MetricDefinition, df: DataFrame) extends java.io.Serializable {
   type PreAggregateRowType <: PreAggregateRow[T]
